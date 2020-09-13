@@ -65,6 +65,22 @@ set(AVR 1)
 # - AVR_SIZE_ARGS
 ##########################################################################
 
+##########################################################################
+# simavr setup
+##########################################################################
+
+find_program(SIMAVR simavr)
+find_program(AVR_GDB avr-gdb)
+
+find_path(SIMAVR_INCLUDE_DIR
+	NAMES
+		"simavr/avr/avr_mcu_section.h"
+
+	PATHS
+		/usr/include
+		/usr/local/include
+)
+
 # default upload tool
 if(NOT AVR_UPLOADTOOL)
     set(
@@ -180,7 +196,7 @@ function(add_avr_executable EXECUTABLE_NAME)
       ${elf_file}
       PROPERTIES
          COMPILE_FLAGS "-mmcu=${AVR_MCU}"
-         LINK_FLAGS "-mmcu=${AVR_MCU} -Wl,--gc-sections -mrelax -Wl,-Map,${map_file}"
+         LINK_FLAGS "-mmcu=${AVR_MCU} -mrelax -Wl,-Map,${map_file}"
    )
 
    add_custom_command(
@@ -208,6 +224,35 @@ function(add_avr_executable EXECUTABLE_NAME)
             -O ihex ${elf_file} ${eeprom_image}
       DEPENDS ${elf_file}
    )
+
+   if(SIMAVR)
+   # create sim avr targets
+      add_custom_command(
+         OUTPUT "sim_${elf_file}"
+         COMMAND
+            ${SIMAVR} -g -t -m ${AVR_MCU} -f ${MCU_SPEED} ${elf_file}
+      )
+      
+      add_gdb_commands_file(${elf_file})
+      file(WRITE ".${elf_file}_launch.gdb.sh"
+      "(trap 'kill 0' SIGINT; ${SIMAVR} -g -t -m ${AVR_MCU} -f ${MCU_SPEED} ${elf_file} & ${AVR_GDB} -x ${GDB_COMMANDS_FILE})")
+
+      add_custom_command(
+         OUTPUT "gdb_${elf_file}"
+         COMMAND
+            "${CMAKE_SOURCE_DIR}/.${elf_file}_launch.gdb.sh"
+      )
+
+      add_custom_target(
+         "gdb_${EXECUTABLE_NAME}"
+         DEPENDS "gdb_${elf_file}" ${elf_file}
+      )
+
+      add_custom_target(
+         "sim_${EXECUTABLE_NAME}"
+         DEPENDS "sim_${elf_file}" ${elf_file}
+      )
+   endif(SIMAVR)
 
    add_custom_target(
       ${EXECUTABLE_NAME}
@@ -256,7 +301,6 @@ function(add_avr_executable EXECUTABLE_NAME)
       DEPENDS ${elf_file}
    )
 endfunction(add_avr_executable)
-
 
 ##########################################################################
 # add_avr_library
@@ -402,3 +446,69 @@ function(avr_generate_fixed_targets)
          COMMENT "Program calibration status of internal oscillator from ${AVR_MCU}_calib.hex."
    )
 endfunction()
+
+##########################################################################
+# add_vcd_trace
+#
+# Builds a VCD trace file
+##########################################################################
+
+macro(add_vcd_trace target_name)
+   message("-- Generating ${target_name} VCD trace file for ${AVR_MCU}")
+   
+    include_directories("${SIMAVR_INCLUDE_DIR}/simavr")
+
+	# list of our trace arguments
+	set(trace_list)
+
+	foreach(arg ${ARGN})
+
+		# break down argument string
+		string(REPLACE "," ";" arg_list ${arg})
+
+		# get arguments
+		list(GET arg_list 0 symbol_name)
+		list(GET arg_list 1 mask)
+		list(GET arg_list 2 what)
+
+		# append structure
+		list(APPEND trace_list "\t{ AVR_MCU_VCD_SYMBOL(\"${symbol_name}\"), .mask = (1 << ${mask}), .what = (void*)&${what}, },\n")
+
+	endforeach(arg ${ARGN})
+
+	# remove semi-colons that delimit a cmake list
+	string(REPLACE ";" " " trace_list ${trace_list})
+
+	# our file name
+	set(FILENAME "${target_name}_${AVR_MCU}_vcd_trace.c")
+	# full file path
+	set(TRACE_FILE "${CMAKE_BINARY_DIR}/${FILENAME}")
+
+	# generate the file
+	file(WRITE ${TRACE_FILE}
+		"// Auto generated file by cmake\n"
+		"// Generated VCD trace info for ${mcu} with clock speed ${MCU_SPEED}\n\n"
+
+		"#include <avr/io.h>\n"
+
+		"#include <avr/avr_mcu_section.h>\n\n"
+		"AVR_MCU(F_CPU, \"${AVR_MCU}\");\n"
+		"AVR_MCU_VCD_FILE(\"${target_name}_trace.vcd\", 1000);\n\n"
+
+		"const struct avr_mmcu_vcd_trace_t _mytrace[] _MMCU_ = {\n"
+		"${trace_list}"
+		"};\n"
+	)
+
+	set("${target_name}_VCD_TRACE_FILE" ${TRACE_FILE})
+endmacro(add_vcd_trace)
+
+macro(add_gdb_commands_file elf_file)
+   set(GDB_COMMANDS_FILE ".${elf_file}.commands.gdb")
+
+   file(WRITE ${GDB_COMMANDS_FILE}
+      "file ${elf_file}\n"
+      "target remote :1234\n"
+      "load\n"
+   )
+endmacro()
