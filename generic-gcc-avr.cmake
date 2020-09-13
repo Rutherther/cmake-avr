@@ -230,7 +230,7 @@ function(add_avr_executable EXECUTABLE_NAME)
       add_custom_command(
          OUTPUT "sim_${elf_file}"
          COMMAND
-            ${SIMAVR} -g -t -m ${AVR_MCU} -f ${MCU_SPEED} ${elf_file}
+            ${SIMAVR} -t -m ${AVR_MCU} -f ${MCU_SPEED} ${elf_file}
       )
       
       add_gdb_commands_file(${elf_file})
